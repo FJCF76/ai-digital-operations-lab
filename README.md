@@ -25,7 +25,7 @@ This is a collection of hands-on experiments and working artifacts, including:
 
 ## Repository Structure
 
-- **/n8n-workflows**  
+- **/n8n**  
   Automation workflows for operational tasks and experimentation.
 
 - **/infrastructure**  
