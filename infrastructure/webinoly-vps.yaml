@@ -1,4 +1,34 @@
 #cloud-config
+#
+# Webinoly LEMP VPS — Hetzner Cloud-Init Configuration
+#
+# Provisions an Ubuntu server with a hardened Webinoly (LEMP) stack.
+# Paste the entire contents of this file into the "Cloud config" text
+# box when creating a new server in the Hetzner Cloud Console.
+#
+# What it does (in order):
+#   1. Creates an admin user with SSH key-only access
+#   2. Hardens SSH (no root login, no passwords, AllowUsers)
+#   3. Configures journald, cron, and unattended-upgrades
+#   4. Runs webfiable-bootstrap.sh via runcmd, which:
+#      - Enables UFW with ports 22, 80, 443, and 4005 (tools)
+#      - Installs Webinoly and the full LEMP stack (nginx, PHP, MariaDB)
+#      - Sets up the default HTML site, tools auth, and blackhole
+#   5. Powers off the server to signal that provisioning is complete
+#
+# After first boot:
+#   1. Start the server from the Hetzner Console
+#   2. SSH in:  ssh wfroot-n5i9y@<server-ip>
+#   3. Verify:  sudo ./check-cloud-init.sh
+#
+# Files deployed:
+#   /etc/ssh/sshd_config.d/20-webfiable-hardening.conf  — SSH hardening
+#   /etc/systemd/journald.conf.d/60-webfiable.conf      — persistent journal
+#   /etc/cron.allow                                      — cron whitelist
+#   /etc/apt/apt.conf.d/52unattended-upgrades-webfiable  — auto-updates
+#   /home/wfroot-n5i9y/check-cloud-init.sh              — health check script
+#   /usr/local/sbin/webfiable-bootstrap.sh               — main setup logic
+#
 timezone: Europe/Madrid
 manage_etc_hosts: localhost
 package_update: true
@@ -78,37 +108,37 @@ write_files:
       # cloud-init Health Check
       #######################################
       #
-      # Creado por: Claude (Anthropic) — sesión con Fernando
-      # Fecha:      2026-03-15
-      # Contexto:   Script de diagnóstico para verificar que el cloud-init
-      #             (webfiable-bootstrap.sh) se ejecutó correctamente en un
-      #             servidor Ubuntu con Webinoly (LEMP stack).
+      # Created by: Claude (Anthropic) — session with Fernando
+      # Date:       2026-03-15
+      # Context:    Diagnostic script to verify that cloud-init
+      #             (webfiable-bootstrap.sh) executed correctly on an
+      #             Ubuntu server with Webinoly (LEMP stack).
       #
-      # Compañero de: cloud-init.yaml (provisioning inicial)
-      #               install-openclaw-webinoly.sh (instalación de OpenClaw)
+      # Companion to: cloud-init.yaml (initial provisioning)
+      #               install-openclaw-webinoly.sh (OpenClaw installation)
       #
       # USO:
       #   sudo ./check-cloud-init.sh
       #
-      # El script verifica 14 áreas:
-      #   1.  Usuario del sistema y claves SSH
-      #   2.  Hardening SSH
+      # The script checks 14 areas:
+      #   1.  System user and SSH keys
+      #   2.  SSH hardening
       #   3.  Firewall (UFW)
       #   4.  Timezone
       #   5.  Journald
       #   6.  Cron
-      #   7.  Webinoly (comandos y configuración)
+      #   7.  Webinoly (commands and configuration)
       #   8.  Nginx
       #   9.  PHP / PHP-FPM
       #   10. MariaDB / MySQL
-      #   11. Sitio por defecto, tools port, blackhole
-      #   12. Actualizaciones automáticas
-      #   13. Limpieza (apport)
-      #   14. Estado de cloud-init
+      #   11. Default site, tools port, blackhole
+      #   12. Automatic updates
+      #   13. Cleanup (apport)
+      #   14. Cloud-init status
       #
       # EXIT CODE:
-      #   0 = todo OK
-      #   N = número de checks fallidos
+      #   0 = all OK
+      #   N = number of failed checks
       #
       #######################################
 
@@ -116,7 +146,7 @@ write_files:
       TOOLS_PORT="4005"
 
       #######################################
-      # Colores
+      # Colors
       #######################################
 
       G="\033[1;32m"   # green
@@ -130,7 +160,7 @@ write_files:
       X="\033[0m"      # reset
 
       #######################################
-      # Contadores
+      # Counters
       #######################################
 
       PASS=0
@@ -138,7 +168,7 @@ write_files:
       WARN=0
 
       #######################################
-      # Utilidades
+      # Utilities
       #######################################
 
       banner() {
@@ -181,7 +211,7 @@ write_files:
         if command -v "$cmd" >/dev/null 2>&1; then
           pass "$label"
         else
-          fail "$label — comando '$cmd' no encontrado"
+          fail "$label — command '$cmd' not found"
         fi
       }
 
@@ -191,7 +221,7 @@ write_files:
         if systemctl is-active --quiet "$svc" 2>/dev/null; then
           pass "$label"
         else
-          fail "$label — servicio '$svc' no está activo"
+          fail "$label — service '$svc' is not active"
         fi
       }
 
@@ -201,7 +231,7 @@ write_files:
         if [[ -f "$path" ]]; then
           pass "$label"
         else
-          fail "$label — no existe: $path"
+          fail "$label — does not exist: $path"
         fi
       }
 
@@ -213,49 +243,49 @@ write_files:
           pass "$label"
         else
           fail "$label"
-          detail "Esperaba '$pattern' en $path"
+          detail "Expected '$pattern' in $path"
         fi
       }
 
       #######################################
-      # Permisos
+      # Permissions
       #######################################
 
       banner
 
       if [[ $EUID -ne 0 ]]; then
-        echo -e "${R}   Este script debe ejecutarse con sudo.${X}"
+        echo -e "${R}   This script must be run with sudo.${X}"
         exit 1
       fi
 
       #######################################
-      # 1. Usuario del sistema
+      # 1. System user
       #######################################
 
-      section "👤 Usuario del sistema"
+      section "👤 System user"
 
       if id "${TARGET_USER}" >/dev/null 2>&1; then
-        pass "Usuario '${TARGET_USER}' existe"
+        pass "User '${TARGET_USER}' exists"
       else
-        fail "Usuario '${TARGET_USER}' NO existe"
+        fail "User '${TARGET_USER}' does NOT exist"
       fi
 
       if groups "${TARGET_USER}" 2>/dev/null | grep -q sudo; then
-        pass "Usuario en grupo sudo"
+        pass "User in sudo group"
       else
-        fail "Usuario NO está en grupo sudo"
+        fail "User is NOT in sudo group"
       fi
 
       if [[ -d "/home/${TARGET_USER}/.ssh" ]]; then
-        pass "Directorio .ssh existe"
+        pass ".ssh directory exists"
         if [[ -f "/home/${TARGET_USER}/.ssh/authorized_keys" ]]; then
           key_count=$(wc -l < "/home/${TARGET_USER}/.ssh/authorized_keys")
-          pass "authorized_keys presente (${key_count} clave(s))"
+          pass "authorized_keys present (${key_count} key(s))"
         else
-          fail "authorized_keys no existe"
+          fail "authorized_keys does not exist"
         fi
       else
-        fail "Directorio .ssh no existe"
+        fail ".ssh directory does not exist"
       fi
 
       #######################################
@@ -265,17 +295,17 @@ write_files:
       section "🔒 Hardening SSH"
 
       SSH_CONF="/etc/ssh/sshd_config.d/20-webfiable-hardening.conf"
-      check_file "Config SSH personalizada" "$SSH_CONF"
+      check_file "Custom SSH config" "$SSH_CONF"
       check_file_contains "PermitRootLogin no" "$SSH_CONF" "^PermitRootLogin no"
       check_file_contains "PasswordAuthentication no" "$SSH_CONF" "^PasswordAuthentication no"
       check_file_contains "PubkeyAuthentication yes" "$SSH_CONF" "^PubkeyAuthentication yes"
       check_file_contains "AllowUsers ${TARGET_USER}" "$SSH_CONF" "^AllowUsers ${TARGET_USER}"
-      check_service "Servicio SSH activo" "ssh"
+      check_service "SSH service active" "ssh"
 
       if sshd -t 2>/dev/null; then
-        pass "Configuración SSH válida (sshd -t)"
+        pass "SSH configuration valid (sshd -t)"
       else
-        fail "sshd -t devuelve errores"
+        fail "sshd -t returned errors"
       fi
 
       #######################################
@@ -285,18 +315,18 @@ write_files:
       section "🧱 Firewall (UFW)"
 
       if ufw status | grep -q "Status: active"; then
-        pass "UFW activo"
+        pass "UFW active"
       else
-        fail "UFW no está activo"
+        fail "UFW is not active"
       fi
 
       for port_proto in "22/tcp" "80/tcp" "443/tcp" "443/udp" "${TOOLS_PORT}/tcp"; do
         port_num="${port_proto%%/*}"
         proto="${port_proto##*/}"
         if ufw status | grep -qE "${port_num}/${proto}.*ALLOW"; then
-          pass "Puerto ${port_proto} permitido"
+          pass "Port ${port_proto} allowed"
         else
-          fail "Puerto ${port_proto} NO encontrado en reglas"
+          fail "Port ${port_proto} NOT found in rules"
         fi
       done
 
@@ -306,11 +336,11 @@ write_files:
 
       section "🕐 Timezone"
 
-      current_tz=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "desconocida")
+      current_tz=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "unknown")
       if [[ "$current_tz" == "Europe/Madrid" ]]; then
         pass "Timezone: Europe/Madrid"
       else
-        fail "Timezone esperada: Europe/Madrid — actual: ${current_tz}"
+        fail "Expected timezone: Europe/Madrid — actual: ${current_tz}"
       fi
 
       #######################################
@@ -320,7 +350,7 @@ write_files:
       section "📝 Journald"
 
       JOURNALD_CONF="/etc/systemd/journald.conf.d/60-webfiable.conf"
-      check_file "Config journald personalizada" "$JOURNALD_CONF"
+      check_file "Custom journald config" "$JOURNALD_CONF"
       check_file_contains "Storage=persistent" "$JOURNALD_CONF" "^Storage=persistent"
       check_file_contains "Compress=yes" "$JOURNALD_CONF" "^Compress=yes"
 
@@ -330,14 +360,14 @@ write_files:
 
       section "⏰ Cron"
 
-      check_file "/etc/cron.allow existe" "/etc/cron.allow"
-      check_file_contains "root en cron.allow" "/etc/cron.allow" "^root$"
-      check_file_contains "${TARGET_USER} en cron.allow" "/etc/cron.allow" "^${TARGET_USER}$"
+      check_file "/etc/cron.allow exists" "/etc/cron.allow"
+      check_file_contains "root in cron.allow" "/etc/cron.allow" "^root$"
+      check_file_contains "${TARGET_USER} in cron.allow" "/etc/cron.allow" "^${TARGET_USER}$"
 
       if [[ ! -f /etc/cron.deny ]]; then
-        pass "cron.deny eliminado"
+        pass "cron.deny removed"
       else
-        warning "cron.deny todavía existe"
+        warning "cron.deny still exists"
       fi
 
       #######################################
@@ -346,13 +376,13 @@ write_files:
 
       section "🌐 Webinoly"
 
-      check_cmd "Comando: webinoly" "webinoly"
-      check_cmd "Comando: site" "site"
-      check_cmd "Comando: stack" "stack"
-      check_cmd "Comando: httpauth" "httpauth"
+      check_cmd "Command: webinoly" "webinoly"
+      check_cmd "Command: site" "site"
+      check_cmd "Command: stack" "stack"
+      check_cmd "Command: httpauth" "httpauth"
 
       WEBINOLY_CONF="/opt/webinoly/webinoly.conf"
-      check_file "webinoly.conf existe" "$WEBINOLY_CONF"
+      check_file "webinoly.conf exists" "$WEBINOLY_CONF"
 
       if [[ -f "$WEBINOLY_CONF" ]]; then
         check_file_contains "nginx-ppa: mainline" "$WEBINOLY_CONF" "^nginx-ppa:mainline"
@@ -370,25 +400,25 @@ write_files:
 
       section "🚀 Nginx"
 
-      check_cmd "Binario nginx instalado" "nginx"
-      check_service "Servicio nginx activo" "nginx"
+      check_cmd "nginx binary installed" "nginx"
+      check_service "nginx service active" "nginx"
 
       if command -v nginx >/dev/null 2>&1; then
         nginx_ver=$(nginx -v 2>&1 | grep -oP '[\d.]+')
-        pass "Versión nginx: ${nginx_ver}"
+        pass "nginx version: ${nginx_ver}"
 
         if nginx -t 2>/dev/null; then
-          pass "Configuración nginx válida (nginx -t)"
+          pass "nginx configuration valid (nginx -t)"
         else
-          fail "nginx -t devuelve errores"
+          fail "nginx -t returned errors"
         fi
       fi
 
       if [[ -d /etc/nginx/sites-enabled ]]; then
         site_count=$(find /etc/nginx/sites-enabled -maxdepth 1 -type f -o -type l | wc -l)
-        pass "Sitios habilitados: ${site_count}"
+        pass "Enabled sites: ${site_count}"
       else
-        fail "Directorio sites-enabled no existe"
+        fail "sites-enabled directory does not exist"
       fi
 
       #######################################
@@ -400,36 +430,36 @@ write_files:
       php_bin=$(command -v php 2>/dev/null || true)
       if [[ -n "$php_bin" ]]; then
         php_ver=$(php -v 2>/dev/null | head -1 | grep -oP '[\d.]+' | head -1)
-        pass "PHP instalado: ${php_ver}"
+        pass "PHP installed: ${php_ver}"
       else
-        fail "PHP no instalado"
+        fail "PHP not installed"
       fi
 
       php_fpm_svc=$(systemctl list-units --type=service --state=running 2>/dev/null | grep -oP 'php[\d.]+-fpm\.service' | head -1 || true)
       if [[ -n "$php_fpm_svc" ]]; then
-        pass "PHP-FPM activo: ${php_fpm_svc}"
+        pass "PHP-FPM active: ${php_fpm_svc}"
       else
-        fail "PHP-FPM no está corriendo"
+        fail "PHP-FPM is not running"
       fi
 
       #######################################
       # 10. MariaDB / MySQL
       #######################################
 
-      section "🗄️  Base de datos"
+      section "🗄️  Database"
 
       if command -v mariadb >/dev/null 2>&1 || command -v mysql >/dev/null 2>&1; then
         db_bin=$(command -v mariadb 2>/dev/null || command -v mysql)
         db_ver=$("$db_bin" --version 2>/dev/null | head -1)
-        pass "Cliente DB disponible"
+        pass "DB client available"
         detail "${db_ver}"
       else
-        fail "No se encontró cliente MariaDB/MySQL"
+        fail "MariaDB/MySQL client not found"
       fi
 
       for svc in mariadb mysql mysqld; do
         if systemctl is-active --quiet "$svc" 2>/dev/null; then
-          pass "Servicio DB activo: ${svc}"
+          pass "DB service active: ${svc}"
           break
         fi
       done
@@ -438,29 +468,29 @@ write_files:
       # 11. Webinoly: default site & tools
       #######################################
 
-      section "🔧 Webinoly: sitio por defecto y herramientas"
+      section "🔧 Webinoly: default site and tools"
 
       FQDN=$(hostname -f 2>/dev/null || echo "")
       if [[ -n "$FQDN" ]]; then
-        pass "FQDN detectado: ${FQDN}"
+        pass "FQDN detected: ${FQDN}"
 
         if [[ -e "/etc/nginx/sites-enabled/${FQDN}" ]] || [[ -e "/var/www/${FQDN}" ]]; then
-          pass "Sitio HTML para ${FQDN} existe"
+          pass "HTML site for ${FQDN} exists"
         else
-          fail "Sitio para ${FQDN} no encontrado"
+          fail "Site for ${FQDN} not found"
         fi
       else
-        warning "No se pudo obtener FQDN"
+        warning "Could not obtain FQDN"
       fi
 
       # Tools port
       if [[ -f "$WEBINOLY_CONF" ]] && grep -qE "^tools-port-set:${TOOLS_PORT}" "$WEBINOLY_CONF" 2>/dev/null; then
-        pass "Tools port configurado: ${TOOLS_PORT}"
+        pass "Tools port configured: ${TOOLS_PORT}"
       else
         if ss -tlnp | grep -q ":${TOOLS_PORT}" 2>/dev/null; then
-          pass "Puerto ${TOOLS_PORT} escuchando (tools)"
+          pass "Port ${TOOLS_PORT} listening (tools)"
         else
-          warning "Tools port ${TOOLS_PORT} — no confirmado en config ni escuchando"
+          warning "Tools port ${TOOLS_PORT} — not confirmed in config nor listening"
         fi
       fi
 
@@ -468,43 +498,43 @@ write_files:
       if [[ -f "$WEBINOLY_CONF" ]] && grep -qE "^default-response:blackhole" "$WEBINOLY_CONF" 2>/dev/null; then
         pass "Default site: blackhole"
       else
-        warning "Default site no configurado como blackhole"
+        warning "Default site not configured as blackhole"
       fi
 
       #######################################
       # 12. Unattended upgrades
       #######################################
 
-      section "🔄 Actualizaciones automáticas"
+      section "🔄 Automatic updates"
 
-      check_cmd "unattended-upgrade disponible" "unattended-upgrade"
+      check_cmd "unattended-upgrade available" "unattended-upgrade"
 
       UA_CONF="/etc/apt/apt.conf.d/52unattended-upgrades-webfiable"
-      check_file "Config unattended-upgrades" "$UA_CONF"
+      check_file "Unattended-upgrades config" "$UA_CONF"
       check_file_contains "Automatic-Reboot true" "$UA_CONF" 'Automatic-Reboot "true"'
-      check_file_contains "Reboot a las 03:30" "$UA_CONF" 'Automatic-Reboot-Time "03:30"'
+      check_file_contains "Reboot at 03:30" "$UA_CONF" 'Automatic-Reboot-Time "03:30"'
 
       AUTO_CONF="/etc/apt/apt.conf.d/20auto-upgrades"
-      check_file "Config auto-upgrades" "$AUTO_CONF"
+      check_file "Auto-upgrades config" "$AUTO_CONF"
 
       for timer in apt-daily.timer apt-daily-upgrade.timer; do
         if systemctl is-enabled --quiet "$timer" 2>/dev/null; then
-          pass "Timer habilitado: ${timer}"
+          pass "Timer enabled: ${timer}"
         else
-          warning "Timer no habilitado: ${timer}"
+          warning "Timer not enabled: ${timer}"
         fi
       done
 
       #######################################
-      # 13. Limpieza
+      # 13. Cleanup
       #######################################
 
-      section "🧹 Limpieza"
+      section "🧹 Cleanup"
 
       if dpkg -l apport 2>/dev/null | grep -q "^ii"; then
-        warning "apport todavía instalado"
+        warning "apport still installed"
       else
-        pass "apport eliminado"
+        pass "apport removed"
       fi
 
       #######################################
@@ -514,30 +544,31 @@ write_files:
       section "☁️  Cloud-init"
 
       if [[ -f /var/log/cloud-init-output.log ]]; then
-        pass "Log de cloud-init existe"
+        pass "cloud-init log exists"
 
         if tail -50 /var/log/cloud-init-output.log | grep -q "Bootstrap completed successfully"; then
-          pass "Bootstrap reportó éxito"
+          pass "Bootstrap reported success"
         else
-          fail "No se encontró mensaje de éxito del bootstrap"
-          detail "Revisa: tail -100 /var/log/cloud-init-output.log"
+          fail "Bootstrap success message not found"
+          detail "Check: tail -100 /var/log/cloud-init-output.log"
         fi
       else
-        warning "Log de cloud-init no encontrado"
+        warning "cloud-init log not found"
       fi
 
-			ci_status=$(cloud-init status 2>/dev/null | grep -oP '\b(done|error|running|recoverable error)\b' | head -1 || echo "desconocido")
+      ci_status=$(cloud-init status 2>/dev/null | grep -oP '\b(done|error|running|recoverable error)\b' | head -1 || true)
+      : "${ci_status:=unknown}"
       if [[ "$ci_status" == "done" ]]; then
         pass "cloud-init status: done"
       elif [[ "$ci_status" == "error" ]]; then
         fail "cloud-init status: error"
-        detail "Ejecuta: cloud-init status --long"
+        detail "Run: cloud-init status --long"
       else
         warning "cloud-init status: ${ci_status}"
       fi
 
       #######################################
-      # Resumen
+      # Summary
       #######################################
 
       echo
@@ -548,15 +579,15 @@ write_files:
 
       if [[ $FAIL -eq 0 && $WARN -eq 0 ]]; then
         echo -e "${G}╔══════════════════════════════════════════════════════════╗${X}"
-        echo -e "${G}║${X}  ${G}🎉 ¡TODO PERFECTO! ${TOTAL}/${TOTAL} checks pasados${X}                   ${G}║${X}"
+        echo -e "${G}║${X}  ${G}🎉 ALL PERFECT! ${TOTAL}/${TOTAL} checks passed${X}                     ${G}║${X}"
         echo -e "${G}╚══════════════════════════════════════════════════════════╝${X}"
       elif [[ $FAIL -eq 0 ]]; then
         echo -e "${Y}╔══════════════════════════════════════════════════════════╗${X}"
-        echo -e "${Y}║${X}  ${G}✅ ${PASS} pasados${X}  ${Y}⚠️  ${WARN} warnings${X}  ${DIM}(0 fallos)${X}             ${Y}║${X}"
+        echo -e "${Y}║${X}  ${G}✅ ${PASS} passed${X}  ${Y}⚠️  ${WARN} warnings${X}  ${DIM}(0 failures)${X}            ${Y}║${X}"
         echo -e "${Y}╚══════════════════════════════════════════════════════════╝${X}"
       else
         echo -e "${R}╔══════════════════════════════════════════════════════════╗${X}"
-        echo -e "${R}║${X}  ${G}✅ ${PASS} pasados${X}  ${Y}⚠️  ${WARN} warnings${X}  ${R}💀 ${FAIL} FALLOS${X}          ${R}║${X}"
+        echo -e "${R}║${X}  ${G}✅ ${PASS} passed${X}  ${Y}⚠️  ${WARN} warnings${X}  ${R}💀 ${FAIL} FAILURES${X}        ${R}║${X}"
         echo -e "${R}╚══════════════════════════════════════════════════════════╝${X}"
       fi
 
@@ -574,6 +605,12 @@ write_files:
       log() {
         printf '[webfiable-bootstrap] %s\n' "$*"
       }
+
+      BOOTSTRAP_OK=false
+
+      trap 'log "ERROR at line ${LINENO:-?} — aborting bootstrap."' ERR
+      trap 'if [[ "$BOOTSTRAP_OK" == "true" ]]; then log "Bootstrap completed successfully."; else log "Bootstrap DID NOT complete — run check-cloud-init.sh for details."; fi' EXIT
+      trap 'log "Received SIGTERM — aborting bootstrap."; exit 143' TERM
 
       require_cmd() {
         command -v "$1" >/dev/null 2>&1 || {
@@ -616,8 +653,8 @@ write_files:
 
       if ! command -v stack >/dev/null 2>&1 || ! command -v webinoly >/dev/null 2>&1; then
         log "Installing Webinoly bootstrap..."
-        curl -fsSL https://qrok.es/wy -o /root/weby
-        bash /root/weby -clean
+        curl --connect-timeout 30 --max-time 120 -fsSL https://qrok.es/wy -o /root/weby
+        timeout 600 bash /root/weby -clean
       fi
 
       # Verify Webinoly management commands (installed by -clean)
@@ -657,7 +694,7 @@ write_files:
       set_conf_value "php-max-child" "15" "${WEBINOLY_CONF}"
 
       # Install all packages — this is where nginx, PHP, and MariaDB get installed
-      stack -lemp
+      timeout 900 stack -lemp
 
       # NOW verify nginx is present
       require_cmd nginx
@@ -692,12 +729,12 @@ write_files:
       systemctl enable apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
       systemctl start apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
 
-      unattended-upgrade --dry-run --debug >/var/log/unattended-upgrades-dry-run.log 2>&1 || true
+      timeout 120 unattended-upgrade --dry-run --debug >/var/log/unattended-upgrades-dry-run.log 2>&1 || true
 
-      log "Bootstrap completed successfully."
+      BOOTSTRAP_OK=true
 
 runcmd:
-  - [bash, -lc, '/usr/local/sbin/webfiable-bootstrap.sh']
+  - [timeout, --kill-after=60, '1200', bash, -lc, '/usr/local/sbin/webfiable-bootstrap.sh']
   - [chown, 'wfroot-n5i9y:wfroot-n5i9y', '/home/wfroot-n5i9y/check-cloud-init.sh']
 
 power_state:
