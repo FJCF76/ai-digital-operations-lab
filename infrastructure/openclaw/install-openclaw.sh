@@ -2,28 +2,30 @@
 set -Eeuo pipefail
 
 #######################################
-# OpenClaw + Webinoly Installer
+# OpenClaw Installer (Nginx + SSL + Basic Auth)
 #######################################
 #
+# Designed for a fresh Ubuntu 24.04 server.
+# Installs and configures:
+#   - Nginx (reverse proxy with WebSocket support)
+#   - Let's Encrypt SSL via certbot (webroot method)
+#   - Basic Auth (htpasswd)
+#   - Node.js 22.x + OpenClaw
+#
 # USAGE:
-#   sudo ./install-openclaw-webinoly.sh
+#   sudo ./install-openclaw.sh
 #
-#   This script must be run with sudo from a normal user (not root).
+#   Must be run with sudo from a normal user (not root directly).
 #   Example:
-#     chmod +x install-openclaw-webinoly.sh
-#     sudo ./install-openclaw-webinoly.sh
-#
-#   Webinoly and Nginx MUST be installed beforehand.
-#   This script does NOT install Webinoly or Nginx.
+#     chmod +x install-openclaw.sh
+#     sudo ./install-openclaw.sh
 #
 # OPTIONAL ENVIRONMENT VARIABLES:
-#   DOMAIN               — If set, used without prompting in the terminal.
-#   BASIC_AUTH_USER       — If set, used without prompting in the terminal.
-#   BASIC_AUTH_PASSWORD   — If set, used without prompting in the terminal.
-#   OPENCLAW_API_KEY      — Required only if OPENCLAW_RUN_ONBOARD=true.
-#
-# To enable automatic onboarding, edit the configuration variables
-# inside the script before running it ("Configuration variables" section).
+#   DOMAIN               — If set, used without prompting.
+#   CERTBOT_EMAIL        — If set, used without prompting.
+#   BASIC_AUTH_USER      — If set, used without prompting.
+#   BASIC_AUTH_PASSWORD   — If set, used without prompting.
+#   OPENCLAW_API_KEY     — Required only if OPENCLAW_RUN_ONBOARD=true.
 #
 #######################################
 
@@ -35,13 +37,14 @@ set -Eeuo pipefail
 TARGET_USER="${SUDO_USER:-}"
 
 # 🌐 Public domain and local upstream
-DOMAIN="${DOMAIN:-}"                               # empty = prompt in terminal
+DOMAIN="${DOMAIN:-}"                               # empty = prompt
+CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"                 # empty = prompt
 UPSTREAM_HOST="127.0.0.1"
 UPSTREAM_PORT="18789"
 
 # 🔐 Basic Auth
-BASIC_AUTH_USER="${BASIC_AUTH_USER:-}"              # empty = prompt in terminal
-BASIC_AUTH_PASSWORD="${BASIC_AUTH_PASSWORD:-}"      # empty = prompt in terminal
+BASIC_AUTH_USER="${BASIC_AUTH_USER:-}"              # empty = prompt
+BASIC_AUTH_PASSWORD="${BASIC_AUTH_PASSWORD:-}"      # empty = prompt
 
 # 🦀 OpenClaw
 INSTALL_OPENCLAW="true"
@@ -54,6 +57,9 @@ OPENCLAW_GATEWAY_BIND="loopback"
 OPENCLAW_GATEWAY_PORT="18789"
 OPENCLAW_INSTALL_DAEMON="true"
 OPENCLAW_SKIP_SKILLS="true"
+
+# 🧪 Set to "true" to use Let's Encrypt staging (no rate limits, untrusted certs)
+USE_STAGING_CERTS="false"
 
 #######################################
 # Colors and utilities
@@ -123,19 +129,18 @@ trap 'fail "Script stopped at line ${LINENO}. Check the message above."' ERR
 clear || true
 echo
 echo -e "${MAGENTA}╔══════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${MAGENTA}║${RESET}  ${CYAN}🦀 OpenClaw + Webinoly Installer${RESET}                        ${MAGENTA}║${RESET}"
+echo -e "${MAGENTA}║${RESET}  ${CYAN}🦀 OpenClaw Installer${RESET}                                   ${MAGENTA}║${RESET}"
 echo -e "${MAGENTA}╚══════════════════════════════════════════════════════════╝${RESET}"
 echo
-echo -e "   ${GREEN}1${RESET}. Verify that Webinoly is already installed 🌐"
-echo -e "   ${GREEN}2${RESET}. Install required dependencies 📦"
-echo -e "   ${GREEN}3${RESET}. Install OpenClaw 🦀"
-echo -e "   ${GREEN}4${RESET}. Create the proxy site in Webinoly 🔁"
-echo -e "   ${GREEN}5${RESET}. Enable SSL 🔒"
-echo -e "   ${GREEN}6${RESET}. Configure Basic Auth 🔐"
+echo -e "   ${GREEN}1${RESET}. Install Nginx 🌐"
+echo -e "   ${GREEN}2${RESET}. Install Node.js + OpenClaw 🦀"
+echo -e "   ${GREEN}3${RESET}. Configure reverse proxy + WebSocket 🔁"
+echo -e "   ${GREEN}4${RESET}. Enable SSL via Let's Encrypt 🔒"
+echo -e "   ${GREEN}5${RESET}. Configure Basic Auth 🔐"
 echo
 
 #######################################
-# Initial checks
+# Prerequisites
 #######################################
 
 step "Checking prerequisites"
@@ -147,37 +152,8 @@ if [[ -z "${TARGET_USER}" || "${TARGET_USER}" == "root" ]]; then
   fail "Could not detect a normal user in SUDO_USER. Run: sudo ./$(basename "$0") from your regular user."
 fi
 
-id "${TARGET_USER}" >/dev/null 2>&1 || fail "User TARGET_USER='${TARGET_USER}' does not exist."
-ok "System user '${TARGET_USER}' ready to go"
-
-for cmd in curl systemctl sudo; do
-  if command -v "$cmd" >/dev/null 2>&1; then
-    ok "Command available: $cmd"
-  else
-    warn "Cannot find '$cmd' yet; it will be installed with dependencies"
-  fi
-done
-
-#######################################
-# Verify Webinoly and Nginx
-#######################################
-
-step "Checking that Webinoly is installed"
-
-command -v site >/dev/null 2>&1 || fail "Cannot find the 'site' command. Install Webinoly first."
-command -v httpauth >/dev/null 2>&1 || fail "Cannot find the 'httpauth' command. Install Webinoly first."
-ok "Webinoly commands present"
-
-command -v nginx >/dev/null 2>&1 || fail "Cannot find 'nginx'. Webinoly seems incomplete."
-ok "Nginx is here"
-
-[[ -d /etc/nginx ]] || fail "/etc/nginx does not exist. Something is wrong with Nginx/Webinoly."
-ok "/etc/nginx exists — looking good"
-
-if ! site >/dev/null 2>&1; then
-  fail "The 'site' command exists but is not responding. Check your Webinoly installation."
-fi
-ok "Webinoly is responding correctly"
+id "${TARGET_USER}" >/dev/null 2>&1 || fail "User '${TARGET_USER}' does not exist."
+ok "System user '${TARGET_USER}' ready"
 
 #######################################
 # Interactive prompts for missing values
@@ -198,6 +174,16 @@ else
   ok "Using domain from environment variable: ${DOMAIN}"
 fi
 
+# --- Certbot email ---
+if [[ -z "${CERTBOT_EMAIL}" ]]; then
+  echo -e "   ${CYAN}📧 Email for Let's Encrypt (certificate expiry warnings).${RESET}"
+  read -rp "   📧 Email: " CERTBOT_EMAIL
+  [[ -n "${CERTBOT_EMAIL}" ]] || fail "An email is required for Let's Encrypt."
+  ok "Email set: ${CERTBOT_EMAIL}"
+else
+  ok "Using certbot email from environment variable: ${CERTBOT_EMAIL}"
+fi
+
 # --- Basic Auth user ---
 if [[ -z "${BASIC_AUTH_USER}" ]]; then
   echo -e "   ${CYAN}👤 Pick a username for the bouncer at the door (Basic Auth).${RESET}"
@@ -209,12 +195,8 @@ else
   ok "Using Basic Auth user from environment variable: ${BASIC_AUTH_USER}"
 fi
 
-# Validate username (Webinoly/htpasswd restrictions)
 if [[ "${BASIC_AUTH_USER}" == *:* ]]; then
   fail "Username cannot contain ':' — htpasswd format restriction."
-fi
-if [[ "${BASIC_AUTH_USER}" == *,* || "${BASIC_AUTH_USER}" == *]* ]]; then
-  fail "Username cannot contain ',' or ']' — Webinoly httpauth parsing limitation."
 fi
 
 # --- Basic Auth password ---
@@ -234,13 +216,15 @@ fi
 
 [[ -n "${BASIC_AUTH_PASSWORD}" ]] || fail "The Basic Auth password cannot be empty."
 
-# Validate password (Webinoly/htpasswd restrictions)
-if [[ "${BASIC_AUTH_PASSWORD}" == *:* ]]; then
-  fail "Password cannot contain ':' — htpasswd format restriction."
-fi
-if [[ "${BASIC_AUTH_PASSWORD}" == *,* || "${BASIC_AUTH_PASSWORD}" == *]* ]]; then
-  fail "Password cannot contain ',' or ']' — Webinoly httpauth parsing limitation."
-fi
+#######################################
+# Derived paths
+#######################################
+
+WEBROOT="/var/www/${DOMAIN}"
+NGINX_SITE="/etc/nginx/sites-available/${DOMAIN}"
+NGINX_LINK="/etc/nginx/sites-enabled/${DOMAIN}"
+HTPASSWD_DIR="/etc/nginx/auth"
+HTPASSWD_FILE="${HTPASSWD_DIR}/${DOMAIN}.htpasswd"
 
 #######################################
 # Base dependencies
@@ -250,9 +234,59 @@ step "Installing base dependencies"
 
 export DEBIAN_FRONTEND=noninteractive
 run_cmd apt-get update -y
-run_cmd apt-get install -y curl ca-certificates gnupg lsb-release sudo dnsutils
+run_cmd apt-get install -y curl ca-certificates gnupg lsb-release sudo dnsutils apache2-utils
 
 ok "Base dependencies ready 📦"
+
+#######################################
+# Install Nginx
+#######################################
+
+step "Installing Nginx"
+
+if command -v nginx >/dev/null 2>&1; then
+  ok "Nginx already installed: $(nginx -v 2>&1 || true)"
+else
+  run_cmd apt-get install -y nginx
+  ok "Nginx installed: $(nginx -v 2>&1 || true)"
+fi
+
+run_cmd systemctl enable nginx
+run_cmd systemctl start nginx
+ok "Nginx running"
+
+# Remove default site if it exists
+if [[ -L /etc/nginx/sites-enabled/default ]]; then
+  rm -f /etc/nginx/sites-enabled/default
+  info "Removed default site"
+fi
+
+# WebSocket upgrade map — placed in conf.d/ (included in http {} by default)
+WS_MAP="/etc/nginx/conf.d/websocket-upgrade-map.conf"
+if [[ ! -f "${WS_MAP}" ]]; then
+  cat > "${WS_MAP}" <<'WSEOF'
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+WSEOF
+  ok "WebSocket upgrade map created"
+else
+  ok "WebSocket upgrade map already exists"
+fi
+
+#######################################
+# Install Certbot
+#######################################
+
+step "Installing Certbot"
+
+if command -v certbot >/dev/null 2>&1; then
+  ok "Certbot already installed"
+else
+  run_cmd apt-get install -y certbot
+  ok "Certbot installed"
+fi
 
 #######################################
 # Install OpenClaw
@@ -261,7 +295,6 @@ ok "Base dependencies ready 📦"
 if [[ "${INSTALL_OPENCLAW}" == "true" ]]; then
   step "Installing Node.js (OpenClaw requirement)"
 
-  # Install Node.js as root (target user may not have passwordless sudo)
   if command -v node >/dev/null 2>&1; then
     node_ver=$(node -v 2>/dev/null || echo "unknown")
     ok "Node.js already installed: ${node_ver}"
@@ -290,7 +323,7 @@ if [[ "${INSTALL_OPENCLAW}" == "true" ]]; then
   # Linger so the daemon survives logout
   if [[ "${OPENCLAW_INSTALL_DAEMON}" == "true" ]]; then
     step "Enabling linger for ${TARGET_USER}"
-    run_cmd loginctl enable-linger "${TARGET_USER}" || fail "Could not enable linger. The daemon will not survive ${TARGET_USER}'s logout."
+    run_cmd loginctl enable-linger "${TARGET_USER}" || fail "Could not enable linger."
     ok "Linger enabled — daemon will persist"
   fi
 
@@ -300,7 +333,6 @@ if [[ "${INSTALL_OPENCLAW}" == "true" ]]; then
 
     [[ -n "${OPENCLAW_API_KEY}" ]] || fail "OPENCLAW_RUN_ONBOARD=true but OPENCLAW_API_KEY is empty."
 
-    # Determine the correct environment variable for the API key
     api_env_var=""
     case "${OPENCLAW_AUTH_CHOICE}" in
       "anthropic-api-key") api_env_var="ANTHROPIC_API_KEY" ;;
@@ -308,12 +340,10 @@ if [[ "${INSTALL_OPENCLAW}" == "true" ]]; then
       *)                   fail "Unsupported OPENCLAW_AUTH_CHOICE: ${OPENCLAW_AUTH_CHOICE}" ;;
     esac
 
-    # Build optional flags
     onboard_flags="--non-interactive --mode local --auth-choice ${OPENCLAW_AUTH_CHOICE} --gateway-port ${OPENCLAW_GATEWAY_PORT} --gateway-bind ${OPENCLAW_GATEWAY_BIND}"
     [[ "${OPENCLAW_INSTALL_DAEMON}" == "true" ]] && onboard_flags+=" --install-daemon"
     [[ "${OPENCLAW_SKIP_SKILLS}" == "true" ]] && onboard_flags+=" --skip-skills"
 
-    # Pass the API key as an environment variable (NOT interpolated in the string)
     run_as_target_user \
       "openclaw onboard ${onboard_flags}" \
       "${api_env_var}=${OPENCLAW_API_KEY}"
@@ -329,39 +359,27 @@ else
 fi
 
 #######################################
-# Create reverse proxy site with Webinoly + SSL
+# Nginx + SSL + Reverse Proxy + Basic Auth
 #######################################
 #
-# For SSL on a reverse proxy, Webinoly uses certbot --manual with
-# hooks (ex-ssl-authentication / ex-ssl-cleanup). The auth hook
-# writes the ACME challenge token under <root-path>/.well-known/.
-#
-# The -root-path MUST match the nginx "root" directive for this site
-# so that the existing "location ^~ /.well-known/" block (which uses
-# try_files $uri =404 against $document_root) can serve it.
-# For proxy sites Webinoly sets root to /var/www/<domain>/htdocs.
-#
-# IMPORTANT: The htdocs directory must be owned by www-data so
-# nginx can traverse it to serve the ACME challenge files.
-# The hook (ex-ssl-authentication) creates files as root:root
-# with 644/755 permissions, which is fine — but the parent dirs
-# must be traversable by the www-data user.
+# Flow:
+#   1. Check if site already fully configured → skip if so
+#   2. Verify DNS resolves to this server
+#   3. Write temporary HTTP-only config (for ACME challenge)
+#   4. Obtain SSL certificate via certbot --webroot
+#   5. Write final config (HTTPS reverse proxy + WebSocket + Basic Auth)
+#   6. Create htpasswd credentials
+#   7. Validate and reload nginx
 #
 #######################################
 
-step "Configuring the site in Webinoly"
-
-# Check if it already exists as a proxy with SSL
-if [[ -e "/etc/nginx/sites-enabled/${DOMAIN}" ]]; then
-  if grep -q "proxy_pass" "/etc/nginx/sites-enabled/${DOMAIN}" 2>/dev/null && \
-     grep -q "ssl_certificate" "/etc/nginx/sites-enabled/${DOMAIN}" 2>/dev/null; then
-    ok "Site ${DOMAIN} already exists as a proxy with SSL — nothing to do"
-    SKIP_SITE_SETUP="true"
-  else
-    warn "Site ${DOMAIN} exists but is incomplete — removing to recreate"
-    site "${DOMAIN}" -delete-all
-    SKIP_SITE_SETUP="false"
-  fi
+# Check if already fully configured
+if [[ -f "${NGINX_SITE}" ]] && \
+   grep -q "ssl_certificate" "${NGINX_SITE}" 2>/dev/null && \
+   grep -q "proxy_pass" "${NGINX_SITE}" 2>/dev/null && \
+   grep -q "auth_basic" "${NGINX_SITE}" 2>/dev/null; then
+  ok "Site ${DOMAIN} already configured with SSL, proxy, and Basic Auth — skipping"
+  SKIP_SITE_SETUP="true"
 else
   SKIP_SITE_SETUP="false"
 fi
@@ -369,7 +387,7 @@ fi
 if [[ "${SKIP_SITE_SETUP}" == "false" ]]; then
 
   #######################################
-  # Verify DNS before enabling SSL
+  # DNS verification
   #######################################
 
   step "DNS verification"
@@ -394,7 +412,6 @@ if [[ "${SKIP_SITE_SETUP}" == "false" ]]; then
   echo -e "   ${YELLOW}└──────────────────────────────────────────────────────┘${RESET}"
   echo
 
-  # Check if DNS already resolves
   info "Checking if ${DOMAIN} already resolves to ${SERVER_IP}..."
   resolved_ip=$(dig +short A "${DOMAIN}" 2>/dev/null | head -1 || true)
 
@@ -410,7 +427,6 @@ if [[ "${SKIP_SITE_SETUP}" == "false" ]]; then
     read -rp "   ⏸️  Press ENTER once you have created the DNS record and it has propagated... " _
     echo
 
-    # Re-check
     resolved_ip=$(dig +short A "${DOMAIN}" 2>/dev/null | head -1 || true)
     if [[ "${resolved_ip}" == "${SERVER_IP}" ]]; then
       ok "DNS confirmed: ${DOMAIN} → ${SERVER_IP}"
@@ -422,98 +438,163 @@ if [[ "${SKIP_SITE_SETUP}" == "false" ]]; then
   fi
 
   #######################################
-  # Create reverse proxy
+  # Obtain SSL certificate
   #######################################
 
-  step "Creating reverse proxy: ${DOMAIN} → ${UPSTREAM_HOST}:${UPSTREAM_PORT}"
+  step "Obtaining SSL certificate for ${DOMAIN}"
 
-  run_cmd site "${DOMAIN}" "-proxy=[${UPSTREAM_HOST}:${UPSTREAM_PORT}]"
-  ok "Proxy site created"
+  CERT_PATH="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
 
-  #######################################
-  # Enable SSL with root-path for the ACME challenge
-  #######################################
-
-  step "Enabling SSL for ${DOMAIN}"
-
-  # Point -root-path to the site's document root so the ACME challenge
-  # token (written by ex-ssl-authentication) is found by nginx's
-  # "location ^~ /.well-known/" → try_files $uri =404.
-  # Proxy sites don't create htdocs on disk, so we create it and set
-  # ownership to www-data so nginx can traverse the path.
-  SSL_CHALLENGE_DIR="/var/www/${DOMAIN}/htdocs"
-  mkdir -p "${SSL_CHALLENGE_DIR}"
-  run_cmd webinoly -server-reset=permissions
-
-  run_cmd site "${DOMAIN}" -ssl=on -root-path="${SSL_CHALLENGE_DIR}"
-  ok "SSL enabled 🔒"
-
-fi
-
-#######################################
-# Enable WebSocket on the Nginx proxy
-#######################################
-#
-# We edit the file in apps.d/ directly because:
-#   - WebSocket headers must be inside location /, not at the server level.
-#   - custom-nginx.conf (the official customization path) is included at the
-#     server level, so it doesn't work for this.
-#   - According to Webinoly documentation, files in apps.d/ are NOT
-#     overwritten during updates (webinoly -update).
-#
-# RISK: these changes will be lost if you run:
-#   - webinoly -server-reset=nginx
-#   - site <domain> -delete followed by site <domain> -proxy=[...]
-# In that case, re-run this script.
-#
-
-step "Configuring WebSocket on the proxy"
-
-PROXY_CONF="/etc/nginx/apps.d/${DOMAIN}-proxy.conf"
-if [[ -f "${PROXY_CONF}" ]]; then
-  # Uncomment Upgrade header
-  if grep -q '#proxy_set_header Upgrade' "${PROXY_CONF}"; then
-    sed -i 's|#proxy_set_header Upgrade $http_upgrade;|proxy_set_header Upgrade $http_upgrade;|' "${PROXY_CONF}"
-    ok "Upgrade header enabled"
+  if [[ -f "${CERT_PATH}" ]]; then
+    ok "Certificate already exists — skipping certbot"
   else
-    ok "Upgrade header was already enabled"
+    # Create webroot for ACME challenges
+    mkdir -p "${WEBROOT}/.well-known/acme-challenge"
+    chown -R www-data:www-data "${WEBROOT}"
+
+    # Write a minimal HTTP-only config so nginx can serve the ACME challenge
+    cat > "${NGINX_SITE}" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root ${WEBROOT};
+    }
+
+    location / {
+        return 503;
+    }
+}
+EOF
+
+    ln -sf "${NGINX_SITE}" "${NGINX_LINK}"
+    nginx -t || fail "Nginx config test failed (HTTP-only config)"
+    systemctl reload nginx
+    ok "Temporary HTTP config active — ready for ACME challenge"
+
+    # Build certbot command
+    certbot_args=(
+      certonly --webroot
+      -w "${WEBROOT}"
+      -d "${DOMAIN}"
+      --non-interactive
+      --agree-tos
+      -m "${CERTBOT_EMAIL}"
+      --deploy-hook "systemctl reload nginx"
+    )
+    if [[ "${USE_STAGING_CERTS}" == "true" ]]; then
+      certbot_args+=(--test-cert)
+      warn "Using Let's Encrypt STAGING — certificate will NOT be trusted by browsers"
+    fi
+
+    run_cmd certbot "${certbot_args[@]}"
+    ok "SSL certificate obtained 🔒"
   fi
 
-  # Change Connection from "" to "upgrade"
-  if grep -q 'proxy_set_header Connection "";' "${PROXY_CONF}"; then
-    sed -i 's|proxy_set_header Connection "";|proxy_set_header Connection "upgrade";|' "${PROXY_CONF}"
-    ok "Connection header changed to 'upgrade'"
-  else
-    ok "Connection header was already configured"
-  fi
-else
-  warn "${PROXY_CONF} not found — configure WebSocket manually"
+  #######################################
+  # Write final Nginx configuration
+  #######################################
+
+  step "Writing Nginx configuration: reverse proxy + SSL + WebSocket + Basic Auth"
+
+  mkdir -p "${HTPASSWD_DIR}"
+
+  cat > "${NGINX_SITE}" <<EOF
+# ──────────────────────────────────────────────────────
+# ${DOMAIN} — OpenClaw reverse proxy
+# Managed by install-openclaw.sh — edit with care
+# ──────────────────────────────────────────────────────
+
+# HTTP → HTTPS redirect (keeps /.well-known for cert renewal)
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root ${WEBROOT};
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+# HTTPS reverse proxy
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${DOMAIN};
+
+    # SSL certificates (managed by certbot)
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    # SSL settings (Mozilla Intermediate — https://ssl-config.mozilla.org)
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_tickets off;
+
+    # HSTS (2 years)
+    add_header Strict-Transport-Security "max-age=63072000" always;
+
+    # Basic Auth
+    auth_basic "Restricted";
+    auth_basic_user_file ${HTPASSWD_FILE};
+
+    location / {
+        proxy_pass http://${UPSTREAM_HOST}:${UPSTREAM_PORT};
+        proxy_http_version 1.1;
+
+        # Standard proxy headers
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+
+        # WebSocket support
+        proxy_set_header Upgrade    \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+
+        # Long-lived connections for WebSocket
+        proxy_read_timeout 86400;
+    }
+}
+EOF
+
+  ln -sf "${NGINX_SITE}" "${NGINX_LINK}"
+  ok "Nginx config written"
+
+  #######################################
+  # Basic Auth credentials
+  #######################################
+
+  step "Configuring Basic Auth"
+
+  # -B = bcrypt, -c = create file (overwrites if exists)
+  htpasswd -Bbc "${HTPASSWD_FILE}" "${BASIC_AUTH_USER}" "${BASIC_AUTH_PASSWORD}"
+  chmod 640 "${HTPASSWD_FILE}"
+  chown root:www-data "${HTPASSWD_FILE}"
+  ok "Basic Auth user '${BASIC_AUTH_USER}' created"
+
+  #######################################
+  # Validate and reload
+  #######################################
+
+  step "Validating and reloading Nginx"
+
+  run_cmd nginx -t
+  ok "Nginx configuration valid"
+
+  run_cmd systemctl reload nginx
+  ok "Nginx reloaded"
+
 fi
-
-step "Configuring Basic Auth"
-
-# Use Webinoly commands exclusively — do not mix with manual htpasswd.
-# httpauth creates and manages its own .htpasswd.
-info "Creating user '${BASIC_AUTH_USER}' on ${DOMAIN} via httpauth"
-run_cmd httpauth "${DOMAIN}" "-add=[${BASIC_AUTH_USER},${BASIC_AUTH_PASSWORD}]"
-ok "Basic Auth user created"
-
-info "Protecting the entire site with Basic Auth"
-run_cmd httpauth "${DOMAIN}" -path=/
-ok "Basic Auth enabled for ${DOMAIN}"
-
-#######################################
-# Validation and reload
-#######################################
-
-step "Validating and reloading Nginx"
-
-run_cmd nginx -t
-ok "Nginx configuration is valid"
-
-run_cmd systemctl reload nginx
-ok "Nginx reloaded"
-
 
 #######################################
 # Final summary
@@ -526,6 +607,7 @@ echo -e "${GREEN}╚════════════════════
 echo
 echo -e "   ${BLUE}🌐 Domain:${RESET}        https://${DOMAIN}"
 echo -e "   ${BLUE}🔁 Proxy:${RESET}         https://${DOMAIN} → http://${UPSTREAM_HOST}:${UPSTREAM_PORT}"
+echo -e "   ${BLUE}🔒 SSL:${RESET}           Let's Encrypt (auto-renews via certbot timer)"
 echo -e "   ${BLUE}🔐 Basic Auth:${RESET}    ${BASIC_AUTH_USER}"
 echo -e "   ${BLUE}🦀 OpenClaw:${RESET}      user=${TARGET_USER}  port=${OPENCLAW_GATEWAY_PORT}  bind=${OPENCLAW_GATEWAY_BIND}"
 echo
@@ -549,8 +631,10 @@ echo -e "      ${CYAN}openclaw devices list${RESET}"
 echo -e "      ${CYAN}openclaw devices approve <request-id>${RESET}"
 echo
 echo -e "   ${YELLOW}⚠️  Notes:${RESET}"
-echo -e "      • Webinoly manages the reverse proxy, SSL, and Basic Auth."
+echo -e "      • SSL renews automatically (certbot systemd timer)."
 echo -e "      • OpenClaw listens only on ${UPSTREAM_HOST} — do not expose port ${UPSTREAM_PORT}."
+echo -e "      • Ensure ports 80 and 443 are open in your firewall (ufw, cloud security group, etc)."
+echo -e "      • To add more Basic Auth users:  ${CYAN}htpasswd -B ${HTPASSWD_FILE} <username>${RESET}"
 echo
 echo -e "   ${GREEN}🚀 All set. Let's go! 🦞${RESET}"
 echo
