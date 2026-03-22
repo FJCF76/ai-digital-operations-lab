@@ -16,6 +16,9 @@
 #      - Enables UFW with ports 22, 80, and 443
 #   5. Powers off the server to signal that provisioning is complete
 #
+# ⚠️  IMPORTANT: Replace the ssh-rsa public key in "ssh_authorized_keys"
+#    with your own before using this file.
+#
 # After first boot:
 #   1. Start the server from the Hetzner Console
 #   2. SSH in:  ssh wfroot-n5i9y@<server-ip>

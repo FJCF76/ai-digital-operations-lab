@@ -2,6 +2,8 @@
 #
 # Webinoly LEMP VPS — Hetzner Cloud-Init Configuration
 #
+# Author: Fernando Covecino
+#
 # Provisions an Ubuntu server with a hardened Webinoly (LEMP) stack.
 # Paste the entire contents of this file into the "Cloud config" text
 # box when creating a new server in the Hetzner Cloud Console.
@@ -15,6 +17,9 @@
 #      - Installs Webinoly and the full LEMP stack (nginx, PHP, MariaDB)
 #      - Sets up the default HTML site, tools auth, and blackhole
 #   5. Powers off the server to signal that provisioning is complete
+#
+# ⚠️  IMPORTANT: Replace the ssh-rsa public key in "ssh_authorized_keys"
+#    with your own before using this file.
 #
 # After first boot:
 #   1. Start the server from the Hetzner Console
@@ -108,7 +113,7 @@ write_files:
       # cloud-init Health Check
       #######################################
       #
-      # Created by: Claude (Anthropic) — session with Fernando
+      # Author:     Fernando Covecino
       # Date:       2026-03-15
       # Context:    Diagnostic script to verify that cloud-init
       #             (webfiable-bootstrap.sh) executed correctly on an
@@ -599,6 +604,8 @@ write_files:
     permissions: '0750'
     content: |
       #!/usr/bin/env bash
+      # Author: Fernando Covecino
+      # https://webfiable.com
       set -Eeuo pipefail
       export DEBIAN_FRONTEND=noninteractive
 
