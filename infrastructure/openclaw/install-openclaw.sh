@@ -5,6 +5,8 @@ set -Eeuo pipefail
 # OpenClaw Installer (Nginx + SSL + Basic Auth)
 #######################################
 #
+# Author: Fernando Covecino
+#
 # Designed for a fresh Ubuntu 24.04 server.
 # Installs and configures:
 #   - Nginx (reverse proxy with WebSocket support)
