@@ -13,8 +13,14 @@
 #   2. Hardens SSH (no root login, no passwords, AllowUsers)
 #   3. Configures journald, cron, and unattended-upgrades
 #   4. Runs webfiable-bootstrap.sh via runcmd, which:
-#      - Enables UFW with ports 22, 80, and 443
-#   5. Powers off the server to signal that provisioning is complete
+#      - Enables UFW with ports 22, 80, 443/tcp and 443/udp
+#      - Removes apport and enables the apt-daily timers
+#      - Writes /var/lib/webfiable/bootstrap.ok when it finishes successfully
+#   5. Powers off the server ONLY if the bootstrap succeeded
+#
+# Reading the result in the Hetzner Console:
+#   - Server OFF     → provisioning succeeded
+#   - Server RUNNING → bootstrap failed; SSH in and check the log
 #
 # ⚠️  IMPORTANT: Replace the ssh-rsa public key in "ssh_authorized_keys"
 #    with your own before using this file.
@@ -31,6 +37,7 @@
 #   /etc/apt/apt.conf.d/52unattended-upgrades-webfiable  — auto-updates
 #   /home/wfroot-n5i9y/check-cloud-init.sh              — health check script
 #   /usr/local/sbin/webfiable-bootstrap.sh               — main setup logic
+#   /var/lib/webfiable/bootstrap.ok                      — success marker
 #
 timezone: Europe/Madrid
 manage_etc_hosts: localhost
@@ -117,7 +124,7 @@ write_files:
       #             (webfiable-bootstrap.sh) executed correctly on an
       #             Ubuntu server.
       #
-      # Companion to: cloud-init.yaml (initial provisioning)
+      # Companion to: vps.yaml (initial provisioning)
       #
       # USO:
       #   sudo ./check-cloud-init.sh
@@ -410,15 +417,16 @@ write_files:
 
       if [[ -f /var/log/cloud-init-output.log ]]; then
         pass "cloud-init log exists"
-
-        if tail -50 /var/log/cloud-init-output.log | grep -q "Bootstrap completed successfully"; then
-          pass "Bootstrap reported success"
-        else
-          fail "Bootstrap success message not found"
-          detail "Check: tail -100 /var/log/cloud-init-output.log"
-        fi
       else
         warning "cloud-init log not found"
+      fi
+
+      BOOTSTRAP_MARKER="/var/lib/webfiable/bootstrap.ok"
+      if [[ -f "$BOOTSTRAP_MARKER" ]]; then
+        pass "Bootstrap completed ($(cat "$BOOTSTRAP_MARKER"))"
+      else
+        fail "Bootstrap marker missing: ${BOOTSTRAP_MARKER}"
+        detail "Check: grep -n webfiable-bootstrap /var/log/cloud-init-output.log"
       fi
 
       ci_status=$(cloud-init status 2>/dev/null | grep -oP '\b(done|error|running|recoverable error)\b' | head -1 || true)
@@ -534,15 +542,22 @@ write_files:
 
       timeout 120 unattended-upgrade --dry-run --debug >/var/log/unattended-upgrades-dry-run.log 2>&1 || true
 
+      # Success marker: read by check-cloud-init.sh and by power_state.
+      # Do not rely on cloud-init-output.log — it is appended to on every boot.
+      install -d -m 0755 -o root -g root /var/lib/webfiable
+      date -Is > /var/lib/webfiable/bootstrap.ok
+
       BOOTSTRAP_OK=true
 
 runcmd:
   - [timeout, --kill-after=60, '1200', bash, -lc, '/usr/local/sbin/webfiable-bootstrap.sh']
   - [chown, 'wfroot-n5i9y:wfroot-n5i9y', '/home/wfroot-n5i9y/check-cloud-init.sh']
 
+# Power off only if the bootstrap wrote its success marker.
+# A server left running after provisioning means the bootstrap failed.
 power_state:
   delay: now
   mode: poweroff
-  message: Powering off after cloud-init
+  message: Powering off after successful cloud-init
   timeout: 120
-  condition: true
+  condition: "test -f /var/lib/webfiable/bootstrap.ok"
